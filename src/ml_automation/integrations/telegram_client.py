@@ -176,7 +176,7 @@ class TelegramRelayClient:
         if self.chat_id:
             payload["chat_id"] = self.chat_id
 
-        body = json.dumps(payload).encode("utf-8")
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
             **self._auth_headers(),
