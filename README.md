@@ -1,6 +1,11 @@
-# ML Automation — Mercado Livre Afiliados Scraper & Curador Inteligente
+# ML Automation — Mercado Livre Afiliados Scraper, Curador & Worker Telegram
 
-Automação headless em Python + Playwright para explorar o Hub de Afiliados do Mercado Livre (`https://www.mercadolivre.com.br/afiliados/hub?is_affiliate=true#menu-user`), interagir com scroll infinito e filtros (*Mais vendidos*, *Ganhos extras*, *Categorias*, *Busca* e *Ordenação*), pontuar e filtrar apenas **produtos de alta conversão** (`sales_score` 0–100) e gerar links de afiliado (`https://meli.la/...`).
+Automação contínua (daemon/worker headless) em Python + Playwright para:
+
+1. Explorar o Hub de Afiliados do Mercado Livre (`https://www.mercadolivre.com.br/afiliados/hub?is_affiliate=true#menu-user`) com scroll infinito e interação com as abas **Mais vendidos**, **Ganhos extras**, **Categorias**, **Busca** e **Ordenação**.
+2. Pontuar (`sales_score` 0–100) e filtrar apenas **produtos de alta conversão** que realmente geram vendas.
+3. Gerar links curtos de afiliado (`https://meli.la/...`) e copy promocional formatada.
+4. Rodar continuamente a cada **15 minutos** (`ml-automation watch`) enviando **Foto + Texto HTML** para o grupo/canal do Telegram através da API [`telegram-bot`](https://github.com/marcoswferreira/telegram-bot/openapi.yaml) (`POST /api/v1/messages/photo` e fallback `POST /api/v1/messages`), com controle anti-duplicidade em `.state/sent_history.json`.
 
 ## Instalação (Windows / PowerShell)
 
@@ -13,53 +18,64 @@ playwright install chromium
 
 ## Fluxo de Uso
 
-### 1. Autenticação (Sessão em `.state/storage_state.json`)
+### 1. Autenticação (`.state/storage_state.json`)
+
 - **Login interativo**:
+
   ```powershell
   ml-automation login
   ```
+
 - **Importar cookies exportados (ex: Cookie-Editor JSON)**:
+
   ```powershell
   ml-automation import-cookies --input cookies.json
   ```
+
 - **Sincronizar direto do Brave** (no Windows exige terminal como Administrador devido à criptografia App-Bound v130+):
+
   ```powershell
   ml-automation sync-cookies
   ```
 
-### 2. Curadoria Completa em 1 Comando (`curate` — Recomendado)
-Roda em modo **headless**, faz scroll infinito no feed principal, interage automaticamente com as abas **Mais vendidos** e **Ganhos extras**, filtra apenas os produtos que realmente geram vendas (`rating >= 4.5`, `sold_quantity >= 500`, `commission_pct >= 8%`, `discount_pct >= 15%` ou comissão extra/selo de destaque, `sales_score >= 55`), ordena pelo `sales_score` (0–100) e gera os links curtos `https://meli.la/...`:
+### 2. Worker Contínuo Integrado ao Telegram (`watch` — Padrão: a cada 15 min)
+
+Roda continuamente em segundo plano (headless), varrendo o Hub a cada **15 minutos**, filtrando produtos inéditos (cooldown de 72h, ou reenvio automático se o preço cair `>= 10%`), gerando os links `https://meli.la/...` e postando **Foto + Legenda HTML** na API do `telegram-bot`:
+
+```powershell
+# Usando variáveis de ambiente ou parâmetros CLI
+$env:TELEGRAM_BOT_API_URL = "http://localhost:8080"
+$env:TELEGRAM_BOT_API_KEY = "sua-api-key"
+$env:TELEGRAM_CHAT_ID = "-1001234567890"
+
+ml-automation watch --interval-minutes 15 --batch-size 5 --send-delay 15
+```
+
+Para rodar apenas 1 ciclo de teste e encerrar:
+
+```powershell
+ml-automation watch --max-cycles 1 --batch-size 5
+```
+
+### 3. Enviar Links Já Gerados para o Telegram (`send-telegram`)
+
+```powershell
+ml-automation send-telegram `
+  --input output/produtos_com_links.json `
+  --api-url http://localhost:8080 `
+  --api-key "sua-api-key"
+```
+
+### 4. Curadoria Local sem Envio (`curate` / `scrape` / `generate-links`)
 
 ```powershell
 ml-automation curate --max-scrolls 8 --top-links 15 --headless
-```
-
-### 3. Extrair Produtos com Filtros Customizados (`scrape`)
-```powershell
-# Curadoria padrão (explora abas + filtra alta conversão)
-ml-automation scrape --output output/produtos.json --max-scrolls 8
-
-# Filtrar por categoria ou busca específica no Hub
 ml-automation scrape --category "Eletrônicos, Áudio e Vídeo" --output output/eletronicos.json
-ml-automation scrape --search "fone bluetooth" --filter best_seller --output output/fones.json
-
-# Exportar todos os produtos sem filtro de corte
-ml-automation scrape --all-products --output output/todos_produtos.json
+ml-automation generate-links --input output/produtos.json --output output/produtos_com_links.json --limit 15
 ```
 
-### 4. Gerar Links de Afiliado (`generate-links`)
-```powershell
-ml-automation generate-links --input output/produtos.json --output output/produtos_com_links.json --limit 20
-```
+## Testes Automatizados
 
-## Critérios do `sales_score` (0–100)
-- **Volume de vendas comprovado (`sold_quantity`)**: até **35 pts** (`+10mil`, `+50mil`, `+100mil vendidos`)
-- **Desconto real (`discount_pct`)**: até **25 pts**
-- **Comissão (`commission_pct`) + bônus `GANHOS EXTRAS`**: até **20 pts**
-- **Avaliação dos compradores (`rating`)**: até **10 pts**
-- **Selo de destaque (`MAIS VENDIDO`, `OFERTA IMPERDÍVEL`, `BLACK FRIDAY`, etc.)**: até **10 pts**
-
-## Testes
 ```powershell
 .\.venv\Scripts\pytest.exe -v
 ```

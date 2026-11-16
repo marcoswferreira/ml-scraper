@@ -7,7 +7,11 @@ from typing import Any, Sequence, Union
 
 from playwright.async_api import Page
 
-from ml_automation.models.product import AffiliateLinkResult, AffiliateProduct
+from ml_automation.models.product import (
+    AffiliateLinkResult,
+    AffiliateProduct,
+    build_promo_copy,
+)
 from ml_automation.scraper.browser import (
     DEFAULT_HUB_URL,
     DEFAULT_STORAGE_STATE,
@@ -34,6 +38,23 @@ def _attach_product_metadata(
     result.sold_text = product.sold_text
     result.highlight = product.highlight
     result.sales_score = product.sales_score
+    result.image_url = product.image_url
+    if result.status == "success" and (result.short_url or result.affiliate_url):
+        link = result.short_url or result.affiliate_url or result.product_url
+        result.promo_copy = build_promo_copy(
+            title=product.title,
+            price=product.price,
+            original_price=product.original_price,
+            discount_pct=product.discount_pct,
+            rating=product.rating,
+            sold_text=product.sold_text,
+            highlight=product.highlight,
+            link=link,
+        )
+        product.affiliate_url = result.affiliate_url
+        product.short_url = result.short_url
+        product.share_text = result.share_text
+        product.promo_copy = result.promo_copy
     return result
 
 

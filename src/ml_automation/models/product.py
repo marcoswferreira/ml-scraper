@@ -49,6 +49,7 @@ class AffiliateProduct(BaseModel):
     affiliate_url: Optional[str] = None
     short_url: Optional[str] = None
     share_text: Optional[str] = None
+    promo_copy: Optional[str] = None
     image_url: Optional[str] = None
     category: Optional[str] = None
     scraped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -71,6 +72,55 @@ class AffiliateProduct(BaseModel):
             self.estimated_commission_brl = round(self.price * (self.commission_pct / 100.0), 2)
         if self.sales_score == 0.0:
             self.sales_score = compute_sales_score(self)
+        if not self.promo_copy and (self.short_url or self.affiliate_url):
+            self.promo_copy = build_promo_copy(
+                title=self.title,
+                price=self.price,
+                original_price=self.original_price,
+                discount_pct=self.discount_pct,
+                rating=self.rating,
+                sold_text=self.sold_text,
+                highlight=self.highlight,
+                link=self.short_url or self.affiliate_url or self.product_url,
+            )
+
+
+def _fmt_brl(val: float) -> str:
+    formatted = f"{val:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {formatted}"
+
+
+def build_promo_copy(
+    title: str,
+    price: Optional[float],
+    original_price: Optional[float],
+    discount_pct: Optional[float],
+    rating: Optional[float],
+    sold_text: Optional[str],
+    highlight: Optional[str],
+    link: str,
+) -> str:
+    """Build a ready-to-share promotional message for WhatsApp / Telegram."""
+    lines: list[str] = []
+    badge = f"🔥 [{highlight}] " if highlight else "🔥 "
+    lines.append(f"{badge}{title}")
+
+    if rating or sold_text:
+        proof_parts = []
+        if rating:
+            proof_parts.append(f"⭐ {rating}")
+        if sold_text:
+            proof_parts.append(f"({sold_text})")
+        lines.append(" ".join(proof_parts))
+
+    if original_price and price and original_price > price:
+        lines.append(f"De: ~{_fmt_brl(original_price)}~")
+    if price:
+        disc_str = f" ({int(discount_pct)}% OFF)" if discount_pct else ""
+        lines.append(f"Por: *{_fmt_brl(price)}*{disc_str}")
+
+    lines.append(f"🛒 Compre aqui: {link}")
+    return "\n".join(lines)
 
 
 def compute_sales_score(product: AffiliateProduct) -> float:
@@ -212,6 +262,8 @@ class AffiliateLinkResult(BaseModel):
     affiliate_url: Optional[str] = None
     short_url: Optional[str] = None
     share_text: Optional[str] = None
+    promo_copy: Optional[str] = None
+    image_url: Optional[str] = None
     status: str = "pending"
     error: Optional[str] = None
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

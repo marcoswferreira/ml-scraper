@@ -13,12 +13,24 @@ from ml_automation.auth.brave_cookies import (
     export_brave_storage_state,
     import_cookies_from_json,
 )
-from ml_automation.models.product import AffiliateProduct
+from ml_automation.integrations.telegram_client import (
+    DEFAULT_TELEGRAM_API_URL,
+    TelegramRelayClient,
+)
+from ml_automation.models.product import AffiliateLinkResult, AffiliateProduct
+from ml_automation.scheduler.worker import (
+    dispatch_links_to_telegram,
+    run_continuous_worker,
+)
 from ml_automation.scraper.browser import DEFAULT_HUB_URL, DEFAULT_STORAGE_STATE
 from ml_automation.scraper.hub_scraper import scrape_affiliate_hub
 from ml_automation.scraper.link_generator import generate_affiliate_links
 from ml_automation.scraper.recon import run_recon
 from ml_automation.storage.exporter import export_items
+from ml_automation.storage.sent_store import (
+    DEFAULT_SENT_HISTORY_PATH,
+    SentProductStore,
+)
 
 app = typer.Typer(
     name="ml-automation",
@@ -252,9 +264,6 @@ def curate(
             search_query=search_query,
         )
     )
-    saved_products = export_items(products, output_path=products_output, fmt="json")
-    typer.echo(f"{len(products)} produtos de alta conversão salvos em: {saved_products}")
-
     selected = products[:top_links]
     results = asyncio.run(
         generate_affiliate_links(
@@ -263,5 +272,178 @@ def curate(
             headless=headless,
         )
     )
+    saved_products = export_items(products, output_path=products_output, fmt="json")
+    typer.echo(f"{len(products)} produtos de alta conversão salvos em: {saved_products}")
     saved_links = export_items(results, output_path=links_output, fmt="json")
-    typer.echo(f"{len(results)} links de afiliado gerados em: {saved_links}")
+    csv_links = links_output.with_suffix(".csv")
+    export_items(results, output_path=csv_links, fmt="csv")
+    typer.echo(f"{len(results)} links de afiliado gerados em: {saved_links} e {csv_links}")
+
+
+@app.command("send-telegram")
+def send_telegram(
+    input_file: Path = typer.Option(
+        Path("output/produtos_com_links.json"),
+        "--input",
+        "-i",
+        help="Arquivo JSON com links de afiliado gerados.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_TELEGRAM_API_URL,
+        "--api-url",
+        envvar="TELEGRAM_BOT_API_URL",
+        help="URL base da API telegram-bot (ex: http://localhost:8080).",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="TELEGRAM_BOT_API_KEY",
+        help="Chave X-API-Key da API telegram-bot (opcional).",
+    ),
+    chat_id: Optional[str] = typer.Option(
+        None,
+        "--chat-id",
+        envvar="TELEGRAM_CHAT_ID",
+        help="ID do grupo/canal no Telegram (opcional se já configurado no telegram-bot).",
+    ),
+    send_photo: bool = typer.Option(
+        True,
+        "--photo/--text-only",
+        help="Envia foto do produto + legenda HTML (padrão) ou apenas texto.",
+    ),
+    send_delay: float = typer.Option(
+        15.0,
+        "--send-delay",
+        help="Intervalo em segundos entre cada mensagem enviada.",
+    ),
+    limit: Optional[int] = typer.Option(
+        None,
+        "--limit",
+        help="Limitar quantidade de ofertas a enviar.",
+    ),
+    sent_history: Path = typer.Option(
+        DEFAULT_SENT_HISTORY_PATH,
+        "--history",
+        help="Arquivo de histórico de produtos enviados.",
+    ),
+) -> None:
+    """Envia produtos com links gerados para o grupo do Telegram via API telegram-bot."""
+    raw = json.loads(input_file.read_text(encoding="utf-8"))
+    items = [AffiliateLinkResult.model_validate(item) for item in raw]
+    if limit is not None:
+        items = items[:limit]
+
+    client = TelegramRelayClient(base_url=api_url, api_key=api_key, chat_id=chat_id)
+    store = SentProductStore(path=sent_history)
+
+    stats = asyncio.run(
+        dispatch_links_to_telegram(
+            items=items,
+            client=client,
+            store=store,
+            send_photo=send_photo,
+            send_delay_seconds=send_delay,
+            respect_history=False,
+            logger=typer.echo,
+        )
+    )
+    typer.echo(
+        f"Resumo Telegram -> Enviados: {stats['sent']} | Ignorados: {stats['skipped']} | Falhas: {stats['failed']}"
+    )
+
+
+@app.command("watch")
+def watch(
+    interval_minutes: float = typer.Option(
+        15.0,
+        "--interval-minutes",
+        "-m",
+        help="Intervalo em minutos entre ciclos de varredura e envio (padrão: 15 min).",
+    ),
+    batch_size: int = typer.Option(
+        5,
+        "--batch-size",
+        "-b",
+        help="Quantidade máxima de produtos enviados por ciclo.",
+    ),
+    send_delay: float = typer.Option(
+        15.0,
+        "--send-delay",
+        help="Segundos de pausa entre cada postagem no Telegram.",
+    ),
+    cooldown_hours: float = typer.Option(
+        72.0,
+        "--cooldown-hours",
+        help="Horas sem repetir o mesmo produto (exceto se o preço cair >= 10%).",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_TELEGRAM_API_URL,
+        "--api-url",
+        envvar="TELEGRAM_BOT_API_URL",
+        help="URL base da API telegram-bot.",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="TELEGRAM_BOT_API_KEY",
+        help="Chave X-API-Key da API telegram-bot.",
+    ),
+    chat_id: Optional[str] = typer.Option(
+        None,
+        "--chat-id",
+        envvar="TELEGRAM_CHAT_ID",
+        help="Sobrescrever chat_id do grupo/canal no Telegram.",
+    ),
+    send_photo: bool = typer.Option(
+        True,
+        "--photo/--text-only",
+        help="Enviar foto do produto + texto HTML (padrão) ou somente texto.",
+    ),
+    max_scrolls: int = typer.Option(8, "--max-scrolls"),
+    max_cycles: Optional[int] = typer.Option(
+        None,
+        "--max-cycles",
+        help="Número máximo de ciclos (None = roda continuamente até Ctrl+C).",
+    ),
+    category: Optional[str] = typer.Option(None, "--category"),
+    search_query: Optional[str] = typer.Option(None, "--search", "-q"),
+    url: str = typer.Option(DEFAULT_HUB_URL, "--url"),
+    storage_state: Path = typer.Option(DEFAULT_STORAGE_STATE, "--state"),
+    products_output: Path = typer.Option(
+        Path("output/produtos.json"), "--products-output"
+    ),
+    links_output: Path = typer.Option(
+        Path("output/produtos_com_links.json"), "--links-output"
+    ),
+    sent_history: Path = typer.Option(
+        DEFAULT_SENT_HISTORY_PATH, "--history"
+    ),
+    headless: bool = typer.Option(True, "--headless/--headed"),
+) -> None:
+    """Roda continuamente em segundo plano (a cada 15 min) extraindo, gerando links e postando no Telegram."""
+    try:
+        asyncio.run(
+            run_continuous_worker(
+                interval_minutes=interval_minutes,
+                max_cycles=max_cycles,
+                url=url,
+                storage_state_path=storage_state,
+                products_output=products_output,
+                links_output=links_output,
+                sent_history_path=sent_history,
+                api_url=api_url,
+                api_key=api_key,
+                chat_id=chat_id,
+                max_scrolls=max_scrolls,
+                batch_size=batch_size,
+                send_delay_seconds=send_delay,
+                cooldown_hours=cooldown_hours,
+                send_photo=send_photo,
+                headless=headless,
+                category=category,
+                search_query=search_query,
+                logger=typer.echo,
+            )
+        )
+    except KeyboardInterrupt:
+        typer.echo("\n[WORKER] Encerrado pelo usuário.")
