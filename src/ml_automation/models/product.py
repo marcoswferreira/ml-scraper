@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import re
+from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from pydantic import BaseModel, Field, field_validator
-
 
 _MLB_PATTERN = re.compile(r"(MLB-?\d+)", re.IGNORECASE)
 _HIGH_CONVERTING_BADGES = {
@@ -202,8 +201,7 @@ def is_high_converting_product(
 
     discount = product.discount_pct or 0.0
     has_strong_badge = bool(
-        product.highlight
-        and any(b in product.highlight.upper() for b in _HIGH_CONVERTING_BADGES)
+        product.highlight and any(b in product.highlight.upper() for b in _HIGH_CONVERTING_BADGES)
     )
     if discount < min_discount_pct and not product.extra_commission and not has_strong_badge:
         return False

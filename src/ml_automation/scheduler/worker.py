@@ -112,9 +112,7 @@ async def run_worker_cycle(
     )
     logger(f"[SCRAPE] {len(products)} produtos de alta conversão encontrados.")
 
-    eligible = [
-        p for p in products if store.is_eligible(p, cooldown_hours=cooldown_hours)
-    ]
+    eligible = [p for p in products if store.is_eligible(p, cooldown_hours=cooldown_hours)]
     selected = eligible[:batch_size]
     logger(
         f"[CURADORIA] {len(eligible)} produtos inéditos/elegíveis | Selecionados para este ciclo: {len(selected)}"

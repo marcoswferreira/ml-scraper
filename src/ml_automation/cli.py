@@ -175,15 +175,9 @@ def scrape(
     ),
     min_rating: float = typer.Option(4.5, "--min-rating", help="Nota mínima (ex: 4.5)."),
     min_sold: int = typer.Option(500, "--min-sold", help="Mínimo de vendas comprovadas."),
-    min_commission: float = typer.Option(
-        8.0, "--min-commission", help="Comissão mínima (%)."
-    ),
-    min_discount: float = typer.Option(
-        15.0, "--min-discount", help="Desconto mínimo (%)."
-    ),
-    min_score: float = typer.Option(
-        55.0, "--min-score", help="Score mínimo de conversão (0-100)."
-    ),
+    min_commission: float = typer.Option(8.0, "--min-commission", help="Comissão mínima (%)."),
+    min_discount: float = typer.Option(15.0, "--min-discount", help="Desconto mínimo (%)."),
+    min_score: float = typer.Option(55.0, "--min-score", help="Score mínimo de conversão (0-100)."),
 ) -> None:
     """Extrai produtos da página de afiliados, aplica curadoria de vendas e exporta para JSON/CSV."""
     products = asyncio.run(
@@ -240,14 +234,12 @@ def generate_links(
 @app.command("curate")
 def curate(
     storage_state: Path = typer.Option(DEFAULT_STORAGE_STATE, "--state"),
-    products_output: Path = typer.Option(
-        Path("output/produtos.json"), "--products-output"
-    ),
-    links_output: Path = typer.Option(
-        Path("output/produtos_com_links.json"), "--links-output"
-    ),
+    products_output: Path = typer.Option(Path("output/produtos.json"), "--products-output"),
+    links_output: Path = typer.Option(Path("output/produtos_com_links.json"), "--links-output"),
     max_scrolls: int = typer.Option(8, "--max-scrolls"),
-    top_links: int = typer.Option(15, "--top-links", help="Quantidade de top produtos para gerar link."),
+    top_links: int = typer.Option(
+        15, "--top-links", help="Quantidade de top produtos para gerar link."
+    ),
     category: Optional[str] = typer.Option(None, "--category"),
     search_query: Optional[str] = typer.Option(None, "--search", "-q"),
     headless: bool = typer.Option(True, "--headless/--headed"),
@@ -409,15 +401,9 @@ def watch(
     search_query: Optional[str] = typer.Option(None, "--search", "-q"),
     url: str = typer.Option(DEFAULT_HUB_URL, "--url"),
     storage_state: Path = typer.Option(DEFAULT_STORAGE_STATE, "--state"),
-    products_output: Path = typer.Option(
-        Path("output/produtos.json"), "--products-output"
-    ),
-    links_output: Path = typer.Option(
-        Path("output/produtos_com_links.json"), "--links-output"
-    ),
-    sent_history: Path = typer.Option(
-        DEFAULT_SENT_HISTORY_PATH, "--history"
-    ),
+    products_output: Path = typer.Option(Path("output/produtos.json"), "--products-output"),
+    links_output: Path = typer.Option(Path("output/produtos_com_links.json"), "--links-output"),
+    sent_history: Path = typer.Option(DEFAULT_SENT_HISTORY_PATH, "--history"),
     headless: bool = typer.Option(True, "--headless/--headed"),
 ) -> None:
     """Roda continuamente em segundo plano (a cada 15 min) extraindo, gerando links e postando no Telegram."""

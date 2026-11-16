@@ -26,6 +26,7 @@ async def run_recon(
     async with open_authenticated_context(
         storage_state_path=storage_state_path, headless=headless
     ) as (_, page):
+
         async def _on_response(response: Any) -> None:
             req = response.request
             if req.resource_type in ("xhr", "fetch"):

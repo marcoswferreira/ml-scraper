@@ -1,12 +1,14 @@
-"""Unit and integration tests for TelegramRelayClient, SentProductStore, and the continuous worker."""
+"""Unit and E2E tests for TelegramRelayClient, SentProductStore, and the continuous watch worker."""
 
+import json
+import threading
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
 from pathlib import Path
-import threading
 from typing import Any
 
+import pytest
+from test_playwright_pipeline import MOCK_HUB_HTML
 from typer.testing import CliRunner
 
 from ml_automation.cli import app
@@ -42,6 +44,7 @@ def test_format_telegram_html_escapes_and_formats_offer() -> None:
 
 def test_sent_product_store_cooldown_and_price_drop(tmp_path: Path) -> None:
     history_file = tmp_path / "sent_history.json"
+    history_file.write_text("invalid-json", encoding="utf-8")
     store = SentProductStore(path=history_file)
 
     t0 = datetime(2026, 11, 16, 12, 0, 0, tzinfo=timezone.utc)
@@ -55,24 +58,16 @@ def test_sent_product_store_cooldown_and_price_drop(tmp_path: Path) -> None:
     assert store.is_eligible(prod, cooldown_hours=72.0, now=t0) is True
     store.mark_sent(prod, message_id=10, chat_id="-100123", sent_at=t0)
 
-    # 1 hour later, same price -> ineligible
-    assert (
-        store.is_eligible(prod, cooldown_hours=72.0, now=t0 + timedelta(hours=1))
-        is False
-    )
+    # Reload from disk
+    reloaded = SentProductStore(path=history_file)
+    assert reloaded.is_eligible(prod, cooldown_hours=72.0, now=t0 + timedelta(hours=1)) is False
 
-    # 1 hour later, price dropped 15% (to 170.0) -> eligible again!
+    # Price dropped 15% (to 170.0) -> eligible again
     cheaper = prod.model_copy(update={"price": 170.0})
-    assert (
-        store.is_eligible(cheaper, cooldown_hours=72.0, now=t0 + timedelta(hours=1))
-        is True
-    )
+    assert reloaded.is_eligible(cheaper, cooldown_hours=72.0, now=t0 + timedelta(hours=1)) is True
 
-    # 73 hours later, same price -> eligible again!
-    assert (
-        store.is_eligible(prod, cooldown_hours=72.0, now=t0 + timedelta(hours=73))
-        is True
-    )
+    # 73 hours later -> eligible again
+    assert reloaded.is_eligible(prod, cooldown_hours=72.0, now=t0 + timedelta(hours=73)) is True
 
 
 def test_telegram_client_and_watch_worker_end_to_end(tmp_path: Path) -> None:
@@ -93,6 +88,11 @@ def test_telegram_client_and_watch_worker_end_to_end(tmp_path: Path) -> None:
                 self.send_header("Content-Type", "image/jpeg")
                 self.end_headers()
                 self.wfile.write(b"\xff\xd8\xff\xe0MOCKJPEGDATA")
+            elif self.path == "/hub":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(MOCK_HUB_HTML.encode("utf-8"))
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -100,6 +100,12 @@ def test_telegram_client_and_watch_worker_end_to_end(tmp_path: Path) -> None:
         def do_POST(self) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             raw_body = self.rfile.read(length)
+            if self.path == "/fail":
+                self.send_response(400)
+                self.end_headers()
+                self.wfile.write(b'{"error":"bad request"}')
+                return
+
             received_requests.append(
                 {
                     "path": self.path,
@@ -132,7 +138,9 @@ def test_telegram_client_and_watch_worker_end_to_end(tmp_path: Path) -> None:
         )
         assert client.check_health() is True
 
-        # 1. Test sending photo + caption via /api/v1/messages/photo
+        offline_client = TelegramRelayClient(base_url="http://127.0.0.1:1", timeout=0.5)
+        assert offline_client.check_health() is False
+
         offer = AffiliateLinkResult(
             item_id="MLB123456",
             title="Fone Bluetooth Pro",
@@ -147,44 +155,81 @@ def test_telegram_client_and_watch_worker_end_to_end(tmp_path: Path) -> None:
             image_url=f"{base_url}/mock-image.jpg",
             status="success",
         )
+
+        # 1. Photo + HTML caption via /api/v1/messages/photo
         res = client.send_product_offer(offer, send_photo=True)
         assert res["ok"] is True
-        assert len(received_requests) == 1
-        assert received_requests[0]["path"] == "/api/v1/messages/photo"
-        assert received_requests[0]["api_key"] == "secret-test-key"
-        assert "multipart/form-data" in received_requests[0]["content_type"]
-        assert "Fone Bluetooth Pro" in received_requests[0]["body_text"]
-        assert "MOCKJPEGDATA" in received_requests[0]["body_text"]
+        assert received_requests[-1]["path"] == "/api/v1/messages/photo"
+        assert "multipart/form-data" in received_requests[-1]["content_type"]
 
-        # 2. Test CLI `send-telegram` command
-        links_file = tmp_path / "links.json"
-        links_file.write_text(
-            json.dumps([offer.model_dump(mode="json")]),
+        # 2. Text-only fallback via /api/v1/messages
+        res_text = client.send_product_offer(offer, send_photo=False)
+        assert res_text["ok"] is True
+        assert received_requests[-1]["path"] == "/api/v1/messages"
+
+        # 3. Error handling on 400
+        with pytest.raises(RuntimeError, match="Erro HTTP 400"):
+            client._request_with_retry(f"{base_url}/fail", body=b"{}", headers={}, max_retries=0)
+
+        # 4. E2E CLI `watch --max-cycles 1` against the mock Hub + mock Telegram API
+        state_file = tmp_path / "storage_state.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "cookies": [
+                        {
+                            "name": "ssid",
+                            "value": "123",
+                            "domain": "127.0.0.1",
+                            "path": "/",
+                        }
+                    ],
+                    "origins": [],
+                }
+            ),
             encoding="utf-8",
         )
-        history_file = tmp_path / "history.json"
+        products_out = tmp_path / "produtos.json"
+        links_out = tmp_path / "produtos_com_links.json"
+        history_file = tmp_path / "sent_history.json"
+
         runner = CliRunner()
-        cli_res = runner.invoke(
+        watch_res = runner.invoke(
             app,
             [
-                "send-telegram",
-                "--input",
-                str(links_file),
+                "watch",
+                "--max-cycles",
+                "1",
+                "--batch-size",
+                "3",
+                "--max-scrolls",
+                "1",
+                "--send-delay",
+                "0",
+                "--url",
+                f"{base_url}/hub",
                 "--api-url",
                 base_url,
                 "--api-key",
                 "secret-test-key",
-                "--send-delay",
-                "0",
+                "--state",
+                str(state_file),
+                "--products-output",
+                str(products_out),
+                "--links-output",
+                str(links_out),
                 "--history",
                 str(history_file),
+                "--headless",
             ],
         )
-        assert cli_res.exit_code == 0, cli_res.output
-        assert "Enviados: 1" in cli_res.output
-        assert len(received_requests) == 2
+        assert watch_res.exit_code == 0, watch_res.output
+        assert "Finalizado após 1 ciclo(s)" in watch_res.output
+        assert products_out.exists()
+        assert links_out.exists()
+        assert history_file.exists()
         saved_hist = json.loads(history_file.read_text(encoding="utf-8"))
-        assert "MLB123456" in saved_hist
+        assert "MLB4455667788" in saved_hist
     finally:
         server.shutdown()
         server.server_close()

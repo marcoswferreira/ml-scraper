@@ -74,9 +74,7 @@ def _encode_multipart_formdata(
 
     for name, value in fields.items():
         chunks.append(f"--{boundary}\r\n".encode("utf-8"))
-        chunks.append(
-            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8")
-        )
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
         chunks.append(f"{value}\r\n".encode("utf-8"))
 
     chunks.append(f"--{boundary}\r\n".encode("utf-8"))
@@ -106,16 +104,10 @@ class TelegramRelayClient:
         timeout: float = 15.0,
     ) -> None:
         self.base_url = (
-            base_url
-            or os.environ.get("TELEGRAM_BOT_API_URL")
-            or DEFAULT_TELEGRAM_API_URL
+            base_url or os.environ.get("TELEGRAM_BOT_API_URL") or DEFAULT_TELEGRAM_API_URL
         ).rstrip("/")
-        self.api_key = (
-            api_key if api_key is not None else os.environ.get("TELEGRAM_BOT_API_KEY")
-        )
-        self.chat_id = (
-            chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID")
-        )
+        self.api_key = api_key if api_key is not None else os.environ.get("TELEGRAM_BOT_API_KEY")
+        self.chat_id = chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID")
         self.timeout = timeout
 
     def _auth_headers(self) -> dict[str, str]:

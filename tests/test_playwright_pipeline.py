@@ -1,13 +1,20 @@
-"""Integration tests for Playwright-based Hub scraping and affiliate link generation."""
+"""Integration and E2E tests for Playwright-based Hub scraping, UI interactions, and link generation."""
 
 import asyncio
 import json
 from pathlib import Path
+
 from playwright.async_api import async_playwright
 from typer.testing import CliRunner
 
 from ml_automation.cli import app
-from ml_automation.scraper.hub_scraper import extract_products_from_page
+from ml_automation.scraper.hub_scraper import (
+    apply_hub_category,
+    apply_hub_search,
+    apply_hub_sort,
+    extract_products_from_page,
+    toggle_hub_quick_filter,
+)
 from ml_automation.scraper.link_generator import _generate_single_link
 
 MOCK_HUB_HTML = """
@@ -15,13 +22,24 @@ MOCK_HUB_HTML = """
 <html lang="pt-BR">
 <head><title>Mercado Livre Afiliados Hub</title></head>
 <body>
+  <div class="recommendations-filters-desktop">
+    <input class="andes-form-control__field" placeholder="Busque produtos" />
+    <button id="best_seller" aria-pressed="false" onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'true' ? 'false' : 'true')">Mais vendidos</button>
+    <button id="extra_commission" aria-pressed="false" onclick="this.setAttribute('aria-pressed', this.getAttribute('aria-pressed') === 'true' ? 'false' : 'true')">Ganhos extras</button>
+    <button class="choice-selector__button">Categorias</button>
+    <label class="radio-list__label">Eletrônicos, Áudio e Vídeo</label>
+    <div class="recommendations-filters-desktop__right-box">
+      <button class="choice-selector__button">Mais relevantes</button>
+      <label class="radio-list__label">Menor preço</label>
+    </div>
+  </div>
   <section id="generator">
-    <input type="url" placeholder="Cole o link do produto aqui" id="url-input" />
-    <button type="button" onclick="document.getElementById('res').value = 'https://mercadolivre.com/sec/2xYz99'">Gerar</button>
-    <input type="text" id="res" readonly value="" />
+    <textarea id="url-0" placeholder="Ex: https://www.mercadolivre.com.br/"></textarea>
+    <button type="button" class="links-form__button" onclick="document.getElementById('textfield-copyLink-1').value = 'https://meli.la/2xYz99'">Gerar</button>
+    <textarea id="textfield-copyLink-1" readonly></textarea>
   </section>
   <main>
-    <article class="poly-card">
+    <li class="poly-card">
       <span class="poly-component__highlight">MAIS VENDIDO</span>
       <a class="poly-component__title" href="https://produto.mercadolivre.com.br/MLB-4455667788-notebook-gamer-_JM">
         Notebook Gamer RTX 4060
@@ -34,21 +52,28 @@ MOCK_HUB_HTML = """
       <span class="poly-price__disc-label">21% OFF</span>
       <span class="poly-pill__pill">GANHOS EXTRAS 15%</span>
       <img src="https://http2.mlstatic.com/D_NQ_NP_12345.webp" />
-    </article>
+    </li>
   </main>
 </body>
 </html>
 """
 
 
-def test_playwright_extract_products_and_generate_link() -> None:
+def test_playwright_extract_interactions_and_generate_link() -> None:
     async def _run() -> None:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.set_content(MOCK_HUB_HTML)
 
-            products = await extract_products_from_page(page)
+            # Test all Hub filter & search UI interactions
+            assert await toggle_hub_quick_filter(page, "best_seller", active=True) is True
+            assert await toggle_hub_quick_filter(page, "extra_commission", active=True) is True
+            assert await apply_hub_search(page, "notebook") is True
+            assert await apply_hub_category(page, "Eletrônicos, Áudio e Vídeo") is True
+            assert await apply_hub_sort(page, "lowest_price") is True
+
+            products = await extract_products_from_page(page, category_hint="Eletrônicos")
             assert len(products) == 1
             prod = products[0]
             assert prod.item_id == "MLB4455667788"
@@ -65,9 +90,10 @@ def test_playwright_extract_products_and_generate_link() -> None:
 
             link_res = await _generate_single_link(page, prod)
             assert link_res.status == "success"
-            assert link_res.affiliate_url == "https://mercadolivre.com/sec/2xYz99"
-            assert link_res.short_url == "https://mercadolivre.com/sec/2xYz99"
+            assert link_res.affiliate_url == "https://meli.la/2xYz99"
+            assert link_res.short_url == "https://meli.la/2xYz99"
             assert link_res.title == "Notebook Gamer RTX 4060"
+            assert link_res.promo_copy is not None
 
             await browser.close()
 
@@ -125,6 +151,12 @@ def test_cli_end_to_end_workflow(tmp_path: Path) -> None:
             str(products_json),
             "--max-scrolls",
             "1",
+            "--search",
+            "notebook",
+            "--category",
+            "Eletrônicos, Áudio e Vídeo",
+            "--sort",
+            "lowest_price",
             "--headless",
         ],
     )
@@ -147,6 +179,8 @@ def test_cli_end_to_end_workflow(tmp_path: Path) -> None:
             mock_url,
             "--state",
             str(state_file),
+            "--limit",
+            "1",
             "--headless",
         ],
     )
@@ -154,5 +188,5 @@ def test_cli_end_to_end_workflow(tmp_path: Path) -> None:
     generated = json.loads(links_json.read_text(encoding="utf-8"))
     assert len(generated) == 1
     assert generated[0]["status"] == "success"
-    assert generated[0]["affiliate_url"] == "https://mercadolivre.com/sec/2xYz99"
+    assert generated[0]["affiliate_url"] == "https://meli.la/2xYz99"
     assert generated[0]["title"] == "Notebook Gamer RTX 4060"

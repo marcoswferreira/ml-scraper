@@ -5,7 +5,7 @@ Automação contínua (daemon/worker headless) em Python + Playwright para:
 1. Explorar o Hub de Afiliados do Mercado Livre (`https://www.mercadolivre.com.br/afiliados/hub?is_affiliate=true#menu-user`) com scroll infinito e interação com as abas **Mais vendidos**, **Ganhos extras**, **Categorias**, **Busca** e **Ordenação**.
 2. Pontuar (`sales_score` 0–100) e filtrar apenas **produtos de alta conversão** que realmente geram vendas.
 3. Gerar links curtos de afiliado (`https://meli.la/...`) e copy promocional formatada.
-4. Rodar continuamente a cada **15 minutos** (`ml-automation watch`) enviando **Foto + Texto HTML** para o grupo/canal do Telegram através da API [`telegram-bot`](https://github.com/marcoswferreira/telegram-bot/openapi.yaml) (`POST /api/v1/messages/photo` e fallback `POST /api/v1/messages`), com controle anti-duplicidade em `.state/sent_history.json`.
+4. Rodar continuamente a cada **15 minutos** (`ml-automation watch`) enviando **Foto + Texto HTML** para o grupo/canal do Telegram através da API [`telegram-bot`](https://github.com/marcoswferreira/telegram-bot/blob/main/openapi.yaml) (`POST /api/v1/messages/photo` e fallback `POST /api/v1/messages`), com controle anti-duplicidade em `.state/sent_history.json`.
 
 ## Instalação (Windows / PowerShell)
 

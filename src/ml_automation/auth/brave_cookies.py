@@ -56,14 +56,10 @@ def to_playwright_cookies(raw_cookies: Iterable[dict[str, Any]]) -> list[dict[st
                 "value": str(value),
                 "domain": str(domain),
                 "path": str(cookie.get("path") or "/"),
-                "expires": _normalize_expires(
-                    cookie.get("expires", cookie.get("expirationDate"))
-                ),
+                "expires": _normalize_expires(cookie.get("expires", cookie.get("expirationDate"))),
                 "httpOnly": bool(cookie.get("http_only", cookie.get("httpOnly", False))),
                 "secure": bool(cookie.get("secure", False)),
-                "sameSite": _normalize_same_site(
-                    cookie.get("same_site", cookie.get("sameSite"))
-                ),
+                "sameSite": _normalize_same_site(cookie.get("same_site", cookie.get("sameSite"))),
             }
         )
     return playwright_cookies
