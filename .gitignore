@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+
+# Auth state & cookies (NEVER commit)
+.state/
+storage_state.json
+cookies.json
+
+# Scraper outputs & debug artifacts
+output/
+*.csv
+*.png
+.env

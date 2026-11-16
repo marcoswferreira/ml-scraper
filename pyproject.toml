@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ml-automation"
+version = "0.1.0"
+description = "Web scraper e gerador de links para o Hub de Afiliados do Mercado Livre usando cookies do Brave"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "playwright>=1.48.0",
+    "pydantic>=2.9.0",
+    "rookiepy>=0.5.4",
+    "typer>=0.12.5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+]
+
+[project.scripts]
+ml-automation = "ml_automation.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
