@@ -1,4 +1,4 @@
-"""Shared Playwright browser context helper."""
+"""Shared Playwright browser context helper with automatic session cookie refresh."""
 
 from __future__ import annotations
 
@@ -17,12 +17,17 @@ DEFAULT_USER_AGENT = (
 )
 
 
+class SessionExpiredError(RuntimeError):
+    """Raised when Mercado Livre redirects an authenticated request to login/auth."""
+
+
 @asynccontextmanager
 async def open_authenticated_context(
     storage_state_path: Path = DEFAULT_STORAGE_STATE,
     headless: bool = True,
+    auto_refresh_state: bool = True,
 ) -> AsyncIterator[tuple[BrowserContext, Page]]:
-    """Launch Chromium with an authenticated Playwright storage_state."""
+    """Launch Chromium with an authenticated Playwright storage_state and refresh cookies on exit."""
     if not storage_state_path.exists():
         raise FileNotFoundError(
             f"Arquivo de sessão não encontrado em '{storage_state_path}'. "
@@ -44,8 +49,19 @@ async def open_authenticated_context(
             "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
         )
         page = await context.new_page()
+        session_valid = True
         try:
             yield context, page
+        except SessionExpiredError:
+            session_valid = False
+            raise
         finally:
+            if auto_refresh_state and session_valid:
+                try:
+                    current_url = (page.url or "").lower()
+                    if current_url.startswith("http") and "login" not in current_url:
+                        await context.storage_state(path=str(storage_state_path))
+                except Exception:
+                    pass
             await context.close()
             await browser.close()

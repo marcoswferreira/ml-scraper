@@ -28,7 +28,13 @@ def format_telegram_html(item: AffiliateLinkResult | AffiliateProduct) -> str:
     highlight = getattr(item, "highlight", None)
     badge = f"[{html.escape(highlight)}] " if highlight else ""
 
-    lines: list[str] = [f"🔥 <b>{badge}{safe_title}</b>"]
+    lines: list[str] = []
+    if getattr(item, "is_lowest_price", False):
+        prev_low = getattr(item, "lowest_price_seen", None)
+        ref_str = f" (Histórico: {_fmt_brl(prev_low)})" if prev_low else ""
+        lines.append(f"🚨 <b>MENOR PREÇO MONITORADO!</b>{ref_str}")
+
+    lines.append(f"🔥 <b>{badge}{safe_title}</b>")
 
     rating = getattr(item, "rating", None)
     sold_text = getattr(item, "sold_text", None)
@@ -51,6 +57,10 @@ def format_telegram_html(item: AffiliateLinkResult | AffiliateProduct) -> str:
     if price:
         disc_str = f" <i>({int(discount_pct)}% OFF)</i>" if discount_pct else ""
         lines.append(f"✅ Por: <b>{_fmt_brl(price)}</b>{disc_str}")
+
+    coupon_text = getattr(item, "coupon_text", None)
+    if coupon_text:
+        lines.append(f"🎟️ <b>Cupom:</b> <code>{html.escape(coupon_text)}</code>")
 
     link = item.short_url or item.affiliate_url or item.product_url
     safe_link = html.escape(link, quote=True)
@@ -247,6 +257,25 @@ class TelegramRelayClient:
             disable_web_page_preview=False,
             disable_notification=disable_notification,
         )
+
+    def send_session_expired_alert(self) -> Optional[dict[str, Any]]:
+        """Send an administrative alert when Mercado Livre cookies expire."""
+        if not self.check_health():
+            return None
+        alert_html = (
+            "⚠️ <b>[ML-AUTOMATION] Sessão do Mercado Livre Expirada</b>\n\n"
+            "Os cookies de autenticação em <code>.state/storage_state.json</code> expiraram.\n"
+            "Execute <code>ml-automation login</code> ou <code>ml-automation sync-cookies</code> "
+            "para renovar a sessão."
+        )
+        try:
+            return self.send_text_message(
+                text=alert_html,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            return None
 
     def _request_with_retry(
         self,

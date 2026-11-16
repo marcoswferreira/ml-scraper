@@ -1,15 +1,126 @@
-"""Persistent deduplication store for products already sent to Telegram."""
+"""Persistent deduplication store and SQLite historical price tracker for affiliate products."""
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-from ml_automation.models.product import AffiliateLinkResult, AffiliateProduct
+from ml_automation.models.product import (
+    AffiliateLinkResult,
+    AffiliateProduct,
+    compute_sales_score,
+)
 
 DEFAULT_SENT_HISTORY_PATH = Path(".state/sent_history.json")
+DEFAULT_PRICE_DB_PATH = Path(".state/price_history.db")
+
+
+class PriceHistoryStore:
+    """SQLite store tracking product prices across scraping cycles to detect historical lows."""
+
+    def __init__(self, db_path: Path = DEFAULT_PRICE_DB_PATH) -> None:
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(str(self.db_path))
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS price_summary (
+                    item_id TEXT PRIMARY KEY,
+                    min_price REAL NOT NULL,
+                    max_price REAL NOT NULL,
+                    avg_price REAL NOT NULL,
+                    last_price REAL NOT NULL,
+                    observations INTEGER NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS price_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    observed_at TEXT NOT NULL
+                )
+                """
+            )
+
+    def record_and_evaluate(
+        self,
+        products: Sequence[AffiliateProduct],
+        drop_below_avg_pct: float = 10.0,
+    ) -> int:
+        """Record current prices and mark products hitting a new historical low."""
+        now_iso = datetime.now(timezone.utc).isoformat()
+        lowest_count = 0
+
+        with self._connect() as conn:
+            for product in products:
+                if product.price is None or product.price <= 0:
+                    continue
+                key = product.item_id or product.product_url
+                curr_price = float(product.price)
+
+                row = conn.execute(
+                    "SELECT min_price, max_price, avg_price, last_price, observations FROM price_summary WHERE item_id = ?",
+                    (key,),
+                ).fetchone()
+
+                if row is None:
+                    conn.execute(
+                        """
+                        INSERT INTO price_summary (item_id, min_price, max_price, avg_price, last_price, observations, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 1, ?)
+                        """,
+                        (key, curr_price, curr_price, curr_price, curr_price, now_iso),
+                    )
+                else:
+                    prev_min, prev_max, prev_avg, prev_last, obs = row
+                    threshold_avg = prev_avg * (1.0 - drop_below_avg_pct / 100.0)
+                    if curr_price < prev_min or curr_price <= threshold_avg:
+                        product.is_lowest_price = True
+                        product.lowest_price_seen = float(max(prev_last, prev_avg, prev_min))
+                        product.sales_score = compute_sales_score(product)
+                        lowest_count += 1
+
+                    new_obs = int(obs) + 1
+                    new_min = min(float(prev_min), curr_price)
+                    new_max = max(float(prev_max), curr_price)
+                    new_avg = round(((float(prev_avg) * int(obs)) + curr_price) / new_obs, 2)
+
+                    conn.execute(
+                        """
+                        UPDATE price_summary
+                        SET min_price = ?, max_price = ?, avg_price = ?, last_price = ?, observations = ?, updated_at = ?
+                        WHERE item_id = ?
+                        """,
+                        (
+                            new_min,
+                            new_max,
+                            new_avg,
+                            curr_price,
+                            new_obs,
+                            now_iso,
+                            key,
+                        ),
+                    )
+
+                conn.execute(
+                    "INSERT INTO price_observations (item_id, price, observed_at) VALUES (?, ?, ?)",
+                    (key, curr_price, now_iso),
+                )
+
+        return lowest_count
 
 
 class SentProductStore:
@@ -58,7 +169,10 @@ class SentProductStore:
         if not entry:
             return True
 
-        # Allow re-sending if price dropped significantly (>= 10% cheaper than last sent price)
+        # Allow re-sending if flagged as historical low or price dropped >= 10%
+        if product.is_lowest_price:
+            return True
+
         prev_price = entry.get("price")
         if (
             prev_price is not None

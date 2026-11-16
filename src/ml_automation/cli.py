@@ -28,6 +28,7 @@ from ml_automation.scraper.link_generator import generate_affiliate_links
 from ml_automation.scraper.recon import run_recon
 from ml_automation.storage.exporter import export_items
 from ml_automation.storage.sent_store import (
+    DEFAULT_PRICE_DB_PATH,
     DEFAULT_SENT_HISTORY_PATH,
     SentProductStore,
 )
@@ -398,12 +399,27 @@ def watch(
         help="Número máximo de ciclos (None = roda continuamente até Ctrl+C).",
     ),
     category: Optional[str] = typer.Option(None, "--category"),
+    rotate_categories: bool = typer.Option(
+        True,
+        "--rotate-categories/--no-rotate-categories",
+        help="Rotaciona automaticamente entre categorias lucrativas a cada ciclo.",
+    ),
+    quiet_hours_mode: Literal["silent", "pause", "off"] = typer.Option(
+        "silent",
+        "--quiet-hours-mode",
+        help="Comportamento na madrugada (00h–08h BRT): 'silent' (sem som), 'pause' (pausa envios) ou 'off'.",
+    ),
     search_query: Optional[str] = typer.Option(None, "--search", "-q"),
     url: str = typer.Option(DEFAULT_HUB_URL, "--url"),
     storage_state: Path = typer.Option(DEFAULT_STORAGE_STATE, "--state"),
     products_output: Path = typer.Option(Path("output/produtos.json"), "--products-output"),
     links_output: Path = typer.Option(Path("output/produtos_com_links.json"), "--links-output"),
     sent_history: Path = typer.Option(DEFAULT_SENT_HISTORY_PATH, "--history"),
+    price_db: Path = typer.Option(
+        DEFAULT_PRICE_DB_PATH,
+        "--price-db",
+        help="Caminho do banco SQLite de histórico de preços.",
+    ),
     headless: bool = typer.Option(True, "--headless/--headed"),
 ) -> None:
     """Roda continuamente em segundo plano (a cada 15 min) extraindo, gerando links e postando no Telegram."""
@@ -417,6 +433,7 @@ def watch(
                 products_output=products_output,
                 links_output=links_output,
                 sent_history_path=sent_history,
+                price_db_path=price_db,
                 api_url=api_url,
                 api_key=api_key,
                 chat_id=chat_id,
@@ -427,7 +444,9 @@ def watch(
                 send_photo=send_photo,
                 headless=headless,
                 category=category,
+                rotate_categories=rotate_categories,
                 search_query=search_query,
+                quiet_hours_mode=quiet_hours_mode,
                 logger=typer.echo,
             )
         )

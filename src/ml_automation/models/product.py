@@ -43,6 +43,9 @@ class AffiliateProduct(BaseModel):
     sold_text: Optional[str] = None
     sold_quantity: Optional[int] = None
     highlight: Optional[str] = None
+    coupon_text: Optional[str] = None
+    lowest_price_seen: Optional[float] = None
+    is_lowest_price: bool = False
     sales_score: float = 0.0
     product_url: str
     affiliate_url: Optional[str] = None
@@ -81,6 +84,9 @@ class AffiliateProduct(BaseModel):
                 sold_text=self.sold_text,
                 highlight=self.highlight,
                 link=self.short_url or self.affiliate_url or self.product_url,
+                coupon_text=self.coupon_text,
+                is_lowest_price=self.is_lowest_price,
+                lowest_price_seen=self.lowest_price_seen,
             )
 
 
@@ -98,9 +104,16 @@ def build_promo_copy(
     sold_text: Optional[str],
     highlight: Optional[str],
     link: str,
+    coupon_text: Optional[str] = None,
+    is_lowest_price: bool = False,
+    lowest_price_seen: Optional[float] = None,
 ) -> str:
     """Build a ready-to-share promotional message for WhatsApp / Telegram."""
     lines: list[str] = []
+    if is_lowest_price:
+        ref_str = f" (Antes: {_fmt_brl(lowest_price_seen)})" if lowest_price_seen else ""
+        lines.append(f"🚨 MENOR PREÇO MONITORADO!{ref_str}")
+
     badge = f"🔥 [{highlight}] " if highlight else "🔥 "
     lines.append(f"{badge}{title}")
 
@@ -118,6 +131,9 @@ def build_promo_copy(
         disc_str = f" ({int(discount_pct)}% OFF)" if discount_pct else ""
         lines.append(f"Por: *{_fmt_brl(price)}*{disc_str}")
 
+    if coupon_text:
+        lines.append(f"🎟️ Cupom: {coupon_text}")
+
     lines.append(f"🛒 Compre aqui: {link}")
     return "\n".join(lines)
 
@@ -130,7 +146,7 @@ def compute_sales_score(product: AffiliateProduct) -> float:
     - Discount attractiveness (discount_pct): up to 25 pts
     - Commission rate & extra commission bonus: up to 20 pts
     - Customer rating (rating >= 4.0): up to 10 pts
-    - Highlight badge (MAIS VENDIDO / OFERTA IMPERDÍVEL / etc.): up to 10 pts
+    - Highlight badge, active coupon, and historical lowest price: up to 15 pts (capped at 100)
     """
     score = 0.0
 
@@ -163,7 +179,7 @@ def compute_sales_score(product: AffiliateProduct) -> float:
     if product.rating is not None and product.rating >= 4.0:
         score += min(10.0, max(0.0, (product.rating - 4.0) * 10.0))
 
-    # 5. Highlight badge boost (0 - 10 pts)
+    # 5. Highlight badge, coupon, and historical price drop boost
     if product.highlight:
         hl_upper = product.highlight.upper()
         if any(b in hl_upper for b in ("MAIS VENDIDO", "OFERTA IMPERDÍVEL", "BLACK FRIDAY")):
@@ -172,6 +188,11 @@ def compute_sales_score(product: AffiliateProduct) -> float:
             score += 8.0
         else:
             score += 4.0
+
+    if product.coupon_text:
+        score += 5.0
+    if product.is_lowest_price:
+        score += 5.0
 
     return round(min(100.0, score), 1)
 
@@ -203,7 +224,13 @@ def is_high_converting_product(
     has_strong_badge = bool(
         product.highlight and any(b in product.highlight.upper() for b in _HIGH_CONVERTING_BADGES)
     )
-    if discount < min_discount_pct and not product.extra_commission and not has_strong_badge:
+    if (
+        discount < min_discount_pct
+        and not product.extra_commission
+        and not has_strong_badge
+        and not product.coupon_text
+        and not product.is_lowest_price
+    ):
         return False
 
     return product.sales_score >= min_sales_score
@@ -233,6 +260,7 @@ def filter_high_converting_products(
     return sorted(
         curated,
         key=lambda p: (
+            p.is_lowest_price,
             p.sales_score,
             p.sold_quantity or 0,
             p.discount_pct or 0.0,
@@ -255,6 +283,9 @@ class AffiliateLinkResult(BaseModel):
     rating: Optional[float] = None
     sold_text: Optional[str] = None
     highlight: Optional[str] = None
+    coupon_text: Optional[str] = None
+    lowest_price_seen: Optional[float] = None
+    is_lowest_price: bool = False
     sales_score: Optional[float] = None
     product_url: str
     affiliate_url: Optional[str] = None

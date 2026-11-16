@@ -1,17 +1,41 @@
 services:
+  telegram-bot:
+    build:
+      context: ${TELEGRAM_BOT_CONTEXT:-../telegram-bot}
+    container_name: telegram-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    networks:
+      - ml-network
+    healthcheck:
+      test: ["CMD", "/telegram-bot", "--healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   ml-automation:
     build: .
     container_name: ml-automation
     restart: unless-stopped
     shm_size: "1gb"
+    depends_on:
+      telegram-bot:
+        condition: service_healthy
+        required: false
     env_file:
       - .env
     environment:
-      - TELEGRAM_BOT_API_URL=${TELEGRAM_BOT_API_URL:-http://host.docker.internal:8080}
+      - TELEGRAM_BOT_API_URL=${TELEGRAM_BOT_API_URL:-http://telegram-bot:8080}
       - TELEGRAM_BOT_API_KEY=${TELEGRAM_BOT_API_KEY:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - ml-network
     volumes:
       - ./.state:/app/.state
       - ./output:/app/output
@@ -25,4 +49,10 @@ services:
       - "${ML_SEND_DELAY:-15}"
       - --cooldown-hours
       - "${ML_COOLDOWN_HOURS:-72}"
+      - --quiet-hours-mode
+      - "${ML_QUIET_HOURS_MODE:-silent}"
       - --headless
+
+networks:
+  ml-network:
+    driver: bridge

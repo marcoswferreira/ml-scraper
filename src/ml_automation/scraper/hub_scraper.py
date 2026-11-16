@@ -15,6 +15,7 @@ from ml_automation.models.product import (
 from ml_automation.scraper.browser import (
     DEFAULT_HUB_URL,
     DEFAULT_STORAGE_STATE,
+    SessionExpiredError,
     open_authenticated_context,
 )
 
@@ -29,6 +30,17 @@ SORT_LABELS: dict[str, str] = {
     "lowest_price": "Menor preço",
     "highest_price": "Maior preço",
 }
+
+PROFITABLE_CATEGORIES: tuple[str, ...] = (
+    "Eletrônicos, Áudio e Vídeo",
+    "Celulares e Telefones",
+    "Eletrodomésticos",
+    "Informática",
+    "Casa, Móveis e Decoração",
+    "Beleza e Cuidado Pessoal",
+    "Ferramentas",
+    "Esportes e Fitness",
+)
 
 
 def parse_brl_price(text: Optional[str]) -> Optional[float]:
@@ -114,6 +126,7 @@ def parse_polycard_from_api(
 
     title = ""
     highlight: Optional[str] = None
+    coupon_text: Optional[str] = None
     rating: Optional[float] = None
     sold_text: Optional[str] = None
     sold_qty: Optional[int] = None
@@ -125,11 +138,16 @@ def parse_polycard_from_api(
 
     for comp in polycard.get("components") or []:
         comp_type = comp.get("type")
+        comp_id = comp.get("id") or ""
         if comp_type == "title":
             title = (comp.get("title") or {}).get("text") or ""
         elif comp_type == "highlight":
             raw_hl = (comp.get("highlight") or {}).get("text") or ""
             highlight = re.sub(r"\{[^}]+\}\s*", "", raw_hl).strip() or None
+        elif comp_type in ("coupons", "coupon", "rebates"):
+            c_obj = comp.get(comp_type) or {}
+            raw_cp = c_obj.get("text") or ""
+            coupon_text = re.sub(r"\{[^}]+\}\s*", "", raw_cp).strip() or None
         elif comp_type == "review_compacted":
             rev = comp.get("review_compacted") or {}
             values = rev.get("values") or []
@@ -144,6 +162,9 @@ def parse_polycard_from_api(
             chip = comp.get("chip") or {}
             pill = chip.get("pill") or {}
             pill_text = pill.get("text") or ""
+            if "coupon" in comp_id.lower() or "cupom" in pill_text.lower():
+                coupon_text = re.sub(r"\{[^}]+\}\s*", "", pill_text).strip() or None
+                continue
             if "{ganancia}" in pill_text:
                 pill_text = "GANHOS EXTRAS"
             label_text = ((chip.get("label") or {}).get("text") or "").strip()
@@ -177,6 +198,7 @@ def parse_polycard_from_api(
         sold_text=sold_text,
         sold_quantity=sold_qty,
         highlight=highlight,
+        coupon_text=coupon_text,
         product_url=product_url,
         image_url=image_url,
         category=category_hint,
@@ -225,6 +247,8 @@ async def extract_products_from_page(
                 const highlightEl =
                     card.querySelector('.poly-component__highlight') ||
                     card.querySelector('[class*="highlight"]');
+                const couponEl =
+                    card.querySelector('.poly-component__coupons, [class*="coupon"], [class*="cupom"]');
                 const imgEl = card.querySelector('img');
                 return {
                     title: titleEl ? titleEl.innerText.replace(/\s+/g, ' ').trim() : '',
@@ -235,6 +259,7 @@ async def extract_products_from_page(
                     commission_text: commissionEl ? commissionEl.innerText.replace(/\s+/g, ' ').trim() : null,
                     review_text: reviewEl ? reviewEl.innerText.replace(/\s+/g, ' ').trim() : null,
                     highlight_text: highlightEl ? highlightEl.innerText.replace(/\s+/g, ' ').trim() : null,
+                    coupon_text: couponEl ? couponEl.innerText.replace(/\s+/g, ' ').trim() : null,
                     image_url: imgEl ? (imgEl.src || imgEl.dataset.src || null) : null,
                 };
             };
@@ -273,6 +298,7 @@ async def extract_products_from_page(
                 sold_text=sold_text,
                 sold_quantity=sold_qty,
                 highlight=item.get("highlight_text") or None,
+                coupon_text=item.get("coupon_text") or None,
                 image_url=item.get("image_url"),
                 category=category_hint,
             )
@@ -297,10 +323,7 @@ async def toggle_hub_quick_filter(
     filter_id: Literal["best_seller", "extra_commission"],
     active: bool = True,
 ) -> bool:
-    """Toggle 'Mais vendidos' (#best_seller) or 'Ganhos extras' (#extra_commission) on the Hub.
-
-    Handles mutual exclusivity between #best_seller and #extra_commission automatically.
-    """
+    """Toggle 'Mais vendidos' (#best_seller) or 'Ganhos extras' (#extra_commission) on the Hub."""
     other_id = "extra_commission" if filter_id == "best_seller" else "best_seller"
     other_btn = page.locator(f"button#{other_id}").first
     if active and await other_btn.count() > 0:
@@ -456,8 +479,8 @@ async def scrape_affiliate_hub(
         except Exception:
             pass
 
-        if "login" in page.url.lower():
-            raise RuntimeError(
+        if "login" in page.url.lower() or "auth" in page.url.lower():
+            raise SessionExpiredError(
                 "Sessão expirada ou não autenticada. Faça login no Brave e rode 'sync-cookies'."
             )
 
@@ -466,7 +489,6 @@ async def scrape_affiliate_hub(
         except Exception:
             pass
 
-        # Apply optional user filters
         if search_query:
             await apply_hub_search(page, search_query)
         if category:
@@ -476,16 +498,17 @@ async def scrape_affiliate_hub(
         if quick_filter:
             await toggle_hub_quick_filter(page, quick_filter, active=True)
 
-        # 1. Scroll and collect from current view
         await _scroll_and_collect(page, collected, max_scrolls=max_scrolls, category_hint=category)
 
-        # 2. If explore_tabs is enabled, also interact with 'Mais vendidos' and 'Ganhos extras'
         if explore_tabs and not quick_filter:
             await page.evaluate("window.scrollTo(0, 0)")
             await page.wait_for_timeout(500)
             if await toggle_hub_quick_filter(page, "best_seller", active=True):
                 await _scroll_and_collect(
-                    page, collected, max_scrolls=max(3, max_scrolls // 2), category_hint=category
+                    page,
+                    collected,
+                    max_scrolls=max(3, max_scrolls // 2),
+                    category_hint=category,
                 )
                 await page.evaluate("window.scrollTo(0, 0)")
                 await page.wait_for_timeout(500)
@@ -493,7 +516,10 @@ async def scrape_affiliate_hub(
 
             if await toggle_hub_quick_filter(page, "extra_commission", active=True):
                 await _scroll_and_collect(
-                    page, collected, max_scrolls=max(3, max_scrolls // 2), category_hint=category
+                    page,
+                    collected,
+                    max_scrolls=max(3, max_scrolls // 2),
+                    category_hint=category,
                 )
                 await page.evaluate("window.scrollTo(0, 0)")
                 await page.wait_for_timeout(500)
@@ -510,4 +536,4 @@ async def scrape_affiliate_hub(
             min_sales_score=min_sales_score,
         )
 
-    return sorted(all_products, key=lambda p: p.sales_score, reverse=True)
+    return sorted(all_products, key=lambda p: (p.is_lowest_price, p.sales_score), reverse=True)
