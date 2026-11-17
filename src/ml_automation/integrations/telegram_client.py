@@ -127,16 +127,32 @@ class TelegramRelayClient:
         return headers
 
     def check_health(self) -> bool:
-        """Return True if GET /health on telegram-bot returns 200 OK."""
-        req = urllib.request.Request(
-            f"{self.base_url}/health",
-            method="GET",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
+        """Return True if GET /health on telegram-bot returns 200 OK (auto-resolving Docker host if needed)."""
+        candidates = [self.base_url]
+        if "://localhost" in self.base_url or "://127.0.0.1" in self.base_url:
+            docker_internal = self.base_url.replace(
+                "://localhost", "://host.docker.internal"
+            ).replace("://127.0.0.1", "://host.docker.internal")
+            docker_service = self.base_url.replace(
+                "://localhost", "://telegram-bot"
+            ).replace("://127.0.0.1", "://telegram-bot")
+            for candidate in (docker_internal, docker_service):
+                if candidate not in candidates:
+                    candidates.append(candidate)
+
+        for candidate in candidates:
+            req = urllib.request.Request(
+                f"{candidate}/health",
+                method="GET",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    if resp.status == 200:
+                        self.base_url = candidate
+                        return True
+            except Exception:
+                continue
+        return False
 
     def _download_image(self, image_url: str) -> Optional[tuple[bytes, str, str]]:
         """Download product image bytes and return (bytes, filename, content_type)."""
