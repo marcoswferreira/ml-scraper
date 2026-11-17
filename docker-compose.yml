@@ -44,7 +44,7 @@ services:
     command:
       - watch
       - --interval-minutes
-      - "${ML_INTERVAL_MINUTES:-15}"
+      - "${ML_INTERVAL_MINUTES:-5}"
       - --batch-size
       - "${ML_BATCH_SIZE:-5}"
       - --send-delay
