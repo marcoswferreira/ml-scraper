@@ -8,7 +8,7 @@ venv/
 dist/
 build/
 .pytest_cache/
-
+deploy-alpine.sh
 # Auth state & cookies (NEVER commit)
 .state/
 storage_state.json

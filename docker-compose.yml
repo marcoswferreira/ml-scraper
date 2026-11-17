@@ -1,11 +1,12 @@
 services:
   telegram-bot:
-    build:
-      context: ${TELEGRAM_BOT_CONTEXT:-../telegram-bot}
+    image: telegram-bot-telegram-bot:latest
     container_name: telegram-bot
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      - API_KEY=${API_KEY:-${TELEGRAM_BOT_API_KEY:-}}
     ports:
       - "8080:8080"
     networks:
@@ -18,10 +19,11 @@ services:
       start_period: 10s
 
   ml-automation:
+    image: ml-automation-ml-automation:latest
     build: .
     container_name: ml-automation
     restart: unless-stopped
-    shm_size: "1gb"
+    shm_size: "512m"
     depends_on:
       telegram-bot:
         condition: service_healthy
@@ -29,7 +31,7 @@ services:
     env_file:
       - .env
     environment:
-      - TELEGRAM_BOT_API_URL=${DOCKER_TELEGRAM_BOT_API_URL:-http://host.docker.internal:8080}
+      - TELEGRAM_BOT_API_URL=${DOCKER_TELEGRAM_BOT_API_URL:-http://telegram-bot:8080}
       - TELEGRAM_BOT_API_KEY=${TELEGRAM_BOT_API_KEY:-}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
     extra_hosts:

@@ -133,9 +133,9 @@ class TelegramRelayClient:
             docker_internal = self.base_url.replace(
                 "://localhost", "://host.docker.internal"
             ).replace("://127.0.0.1", "://host.docker.internal")
-            docker_service = self.base_url.replace(
-                "://localhost", "://telegram-bot"
-            ).replace("://127.0.0.1", "://telegram-bot")
+            docker_service = self.base_url.replace("://localhost", "://telegram-bot").replace(
+                "://127.0.0.1", "://telegram-bot"
+            )
             for candidate in (docker_internal, docker_service):
                 if candidate not in candidates:
                     candidates.append(candidate)

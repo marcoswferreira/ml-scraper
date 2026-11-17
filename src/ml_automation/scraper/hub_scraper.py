@@ -14,10 +14,12 @@ from ml_automation.models.product import (
 )
 from ml_automation.scraper.browser import (
     DEFAULT_HUB_URL,
+    DEFAULT_NAV_TIMEOUT_MS,
     DEFAULT_STORAGE_STATE,
     SessionExpiredError,
     open_authenticated_context,
 )
+from ml_automation.scraper.http_api import CATEGORY_IDS, MlHttpSession
 
 _PRICE_RE = re.compile(r"R\$\s*([\d.]+)(?:\s*,\s*(\d{2}))?")
 _DISCOUNT_RE = re.compile(r"(\d+)\s*%")
@@ -434,6 +436,62 @@ async def _scroll_and_collect(
             collected.setdefault(key, item)
 
 
+async def _scrape_via_http_api(
+    url: str,
+    storage_state_path: Path,
+    max_scrolls: int,
+    explore_tabs: bool,
+    quick_filter: Optional[Literal["best_seller", "extra_commission"]],
+    category: Optional[str],
+    search_query: Optional[str],
+    sort_by: Optional[Literal["relevance", "lowest_price", "highest_price"]],
+) -> list[AffiliateProduct]:
+    """Fast HTTP-only Hub scraping using authenticated cookies and /api/hub/search."""
+    session = MlHttpSession(storage_state_path=storage_state_path)
+    session.bootstrap_hub(url)
+
+    base_filters: list[dict[str, str]] = []
+    if category and category in CATEGORY_IDS:
+        base_filters.append({"id": "category", "value": CATEGORY_IDS[category], "name": category})
+
+    collected: dict[str, AffiliateProduct] = {}
+    pages_to_fetch = max(1, min(max_scrolls, 6))
+    sort_id = sort_by or "relevance"
+    query_str = search_query or ""
+
+    filter_sets: list[list[dict[str, str]]] = []
+    if quick_filter:
+        filter_sets.append([*base_filters, {"id": quick_filter}])
+    else:
+        filter_sets.append(base_filters)
+        if explore_tabs:
+            filter_sets.append([*base_filters, {"id": "best_seller"}])
+            filter_sets.append([*base_filters, {"id": "extra_commission"}])
+
+    for active_filters in filter_sets:
+        for page_idx in range(pages_to_fetch):
+            offset = page_idx * 18
+            try:
+                polycards = session.search_hub(
+                    search=query_str,
+                    sort=sort_id,
+                    filters=active_filters,
+                    offset=offset,
+                )
+            except Exception:
+                break
+            if not polycards:
+                break
+            for pc in polycards:
+                parsed = parse_polycard_from_api(pc, category_hint=category)
+                if parsed is not None:
+                    key = parsed.item_id or parsed.product_url
+                    collected.setdefault(key, parsed)
+
+    session.save_refreshed_cookies()
+    return list(collected.values())
+
+
 async def scrape_affiliate_hub(
     url: str = DEFAULT_HUB_URL,
     storage_state_path: Path = DEFAULT_STORAGE_STATE,
@@ -452,6 +510,39 @@ async def scrape_affiliate_hub(
     min_sales_score: float = 55.0,
 ) -> list[AffiliateProduct]:
     """Open the Mercado Livre Affiliates Hub, interact with filters/scroll, and extract products."""
+    if "mercadolivre.com.br" in url:
+        try:
+            all_products = await _scrape_via_http_api(
+                url=url,
+                storage_state_path=storage_state_path,
+                max_scrolls=max_scrolls,
+                explore_tabs=explore_tabs,
+                quick_filter=quick_filter,
+                category=category,
+                search_query=search_query,
+                sort_by=sort_by,
+            )
+            if all_products:
+                if only_high_converting:
+                    return filter_high_converting_products(
+                        all_products,
+                        min_rating=min_rating,
+                        min_sold=min_sold,
+                        min_commission_pct=min_commission_pct,
+                        min_discount_pct=min_discount_pct,
+                        min_sales_score=min_sales_score,
+                    )
+                return sorted(
+                    all_products,
+                    key=lambda p: (p.is_lowest_price, p.sales_score),
+                    reverse=True,
+                )
+        except SessionExpiredError:
+            raise
+        except Exception:
+            # Fall back to Playwright browser automation if direct HTTP API fails
+            pass
+
     collected: dict[str, AffiliateProduct] = {}
 
     async with open_authenticated_context(
@@ -473,7 +564,7 @@ async def scrape_affiliate_hub(
 
         page.on("response", _on_search_response)
 
-        await page.goto(url, wait_until="domcontentloaded", timeout=60_000)
+        await page.goto(url, wait_until="domcontentloaded", timeout=DEFAULT_NAV_TIMEOUT_MS)
         try:
             await page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:
@@ -485,7 +576,7 @@ async def scrape_affiliate_hub(
             )
 
         try:
-            await page.wait_for_selector("li.poly-card, .poly-card, article", timeout=10_000)
+            await page.wait_for_selector("li.poly-card, .poly-card, article", timeout=30_000)
         except Exception:
             pass
 

@@ -15,9 +15,11 @@ from ml_automation.models.product import (
 )
 from ml_automation.scraper.browser import (
     DEFAULT_HUB_URL,
+    DEFAULT_NAV_TIMEOUT_MS,
     DEFAULT_STORAGE_STATE,
     open_authenticated_context,
 )
+from ml_automation.scraper.http_api import generate_links_via_http
 
 DEFAULT_LINKBUILDER_URL = "https://www.mercadolivre.com.br/afiliados/linkbuilder#hub"
 
@@ -286,12 +288,24 @@ async def generate_affiliate_links(
     headless: bool = True,
 ) -> list[AffiliateLinkResult]:
     """Generate affiliate links for a sequence of Mercado Livre product URLs or AffiliateProducts."""
+    if "mercadolivre.com.br" in hub_url:
+        try:
+            http_results = generate_links_via_http(
+                items=product_urls,
+                storage_state_path=storage_state_path,
+                hub_url=hub_url,
+            )
+            if http_results and all(r.status == "success" for r in http_results):
+                return http_results
+        except Exception:
+            pass
+
     target_url = DEFAULT_LINKBUILDER_URL if hub_url == DEFAULT_HUB_URL else hub_url
     results: list[AffiliateLinkResult] = []
     async with open_authenticated_context(
         storage_state_path=storage_state_path, headless=headless
     ) as (_, page):
-        await page.goto(target_url, wait_until="domcontentloaded", timeout=60_000)
+        await page.goto(target_url, wait_until="domcontentloaded", timeout=DEFAULT_NAV_TIMEOUT_MS)
         try:
             await page.wait_for_load_state("networkidle", timeout=15_000)
         except Exception:
