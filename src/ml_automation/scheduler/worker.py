@@ -278,6 +278,13 @@ async def run_worker_cycle(
         raise
 
     lowest_detected = price_store.record_and_evaluate(products)
+    if category is None and not search_query:
+        # On general feed cycles, keep only exceptional deals (historical low, high score, or >= 35% OFF)
+        products = [
+            p
+            for p in products
+            if p.is_lowest_price or p.sales_score >= 78.0 or (p.discount_pct or 0.0) >= 35.0
+        ]
     products.sort(
         key=lambda p: (
             p.is_lowest_price,
@@ -410,10 +417,11 @@ async def run_continuous_worker(
         if (
             active_category is None
             and rotate_categories
-            and cycle_num > 1
             and PROFITABLE_CATEGORIES
         ):
-            active_category = PROFITABLE_CATEGORIES[(cycle_num - 2) % len(PROFITABLE_CATEGORIES)]
+            # 5 focus cycles (Games, PC, Tech, Vestuário) + 1 general feed cycle for mega deals
+            slot = (cycle_num - 1) % (len(PROFITABLE_CATEGORIES) + 1)
+            active_category = PROFITABLE_CATEGORIES[slot] if slot < len(PROFITABLE_CATEGORIES) else None
 
         try:
             stats = await run_worker_cycle(

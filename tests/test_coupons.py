@@ -70,6 +70,7 @@ def test_classify_and_filter_focus_tecnologia_e_roupas() -> None:
     coupons = [
         MercadoLivreCoupon(title="R$ 3 OFF Novo seguidor", discount_brl=3.0, scope_text="Em roupas"),
         MercadoLivreCoupon(title="15% OFF Ração Pet", discount_pct=15.0),
+        MercadoLivreCoupon(title="35% OFF Supermercado Mega", discount_pct=35.0),
         MercadoLivreCoupon(title="15% OFF Notebooks e Celulares", discount_pct=15.0, action_type="Aplicar"),
         MercadoLivreCoupon(title="R$ 40 OFF Tênis Nike e Roupas", discount_brl=40.0),
         MercadoLivreCoupon(title="10% OFF em todo o site", discount_pct=10.0),
@@ -78,11 +79,12 @@ def test_classify_and_filter_focus_tecnologia_e_roupas() -> None:
     titles = [c.title for c in filtered]
     assert "R$ 3 OFF Novo seguidor" not in titles
     assert "15% OFF Ração Pet" not in titles
+    assert "35% OFF Supermercado Mega" in titles
     assert "15% OFF Notebooks e Celulares" in titles
     assert "R$ 40 OFF Tênis Nike e Roupas" in titles
     assert "10% OFF em todo o site" in titles
-    # Tech & fashion must rank ahead of geral
-    assert titles.index("10% OFF em todo o site") == len(titles) - 1
+    # Tech & fashion must rank ahead of geral and mega other
+    assert titles.index("15% OFF Notebooks e Celulares") < titles.index("10% OFF em todo o site")
 
 
 def test_sent_coupon_store_cooldown(tmp_path: Path) -> None:

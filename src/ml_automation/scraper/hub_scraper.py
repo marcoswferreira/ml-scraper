@@ -34,14 +34,11 @@ SORT_LABELS: dict[str, str] = {
 }
 
 PROFITABLE_CATEGORIES: tuple[str, ...] = (
+    "Games",
+    "Informática",
     "Eletrônicos, Áudio e Vídeo",
     "Celulares e Telefones",
-    "Eletrodomésticos",
-    "Informática",
-    "Casa, Móveis e Decoração",
-    "Beleza e Cuidado Pessoal",
-    "Ferramentas",
-    "Esportes e Fitness",
+    "Calçados, Roupas e Bolsas",
 )
 
 

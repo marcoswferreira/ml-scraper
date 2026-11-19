@@ -29,9 +29,23 @@ _TECH_KEYWORDS: tuple[str, ...] = (
     "gamer",
     "game",
     "games",
+    "console",
+    "consoles",
+    "pc gamer",
     "playstation",
+    "playstation 5",
+    "ps5",
+    "ps4",
     "xbox",
+    "xbox series",
     "nintendo",
+    "nintendo switch",
+    "steam deck",
+    "dualsense",
+    "processador",
+    "placa mae",
+    "memoria ram",
+    "periferico",
     "televisao",
     "smart tv",
     "monitor",
@@ -242,7 +256,11 @@ def filter_relevant_coupons(
             continue
 
         if focus_only and coupon.category_match not in ("tecnologia", "roupas", "geral"):
-            continue
+            is_mega_other = (
+                (coupon.discount_pct or 0.0) >= 25.0 or (coupon.discount_brl or 0.0) >= 50.0
+            )
+            if not is_mega_other:
+                continue
 
         if coupon.score < min_score:
             continue
