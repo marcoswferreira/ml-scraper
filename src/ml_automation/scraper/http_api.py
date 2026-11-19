@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.cookiejar
 import json
+import os
 import re
 import urllib.error
 import urllib.request
@@ -116,7 +117,11 @@ class MlHttpSession:
             )
             existing[key] = entry
         self._state["cookies"] = list(existing.values())
-        self.storage_state_path.write_text(json.dumps(self._state, indent=2), encoding="utf-8")
+        tmp_path = self.storage_state_path.with_name(
+            f".{self.storage_state_path.name}.{os.getpid()}.tmp"
+        )
+        tmp_path.write_text(json.dumps(self._state, indent=2), encoding="utf-8")
+        os.replace(tmp_path, self.storage_state_path)
 
     def bootstrap_hub(self, hub_url: str = DEFAULT_HUB_URL) -> str:
         """Fetch the Hub SSR HTML, verify session is active, and extract csrf-token + affiliate tag."""

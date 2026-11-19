@@ -17,18 +17,22 @@ from ml_automation.integrations.telegram_client import (
     DEFAULT_TELEGRAM_API_URL,
     TelegramRelayClient,
 )
+from ml_automation.models.coupon import DEFAULT_COUPONS_URL
 from ml_automation.models.product import AffiliateLinkResult, AffiliateProduct
 from ml_automation.scheduler.worker import (
     dispatch_links_to_telegram,
     run_continuous_worker,
+    run_coupon_cycle,
 )
 from ml_automation.scraper.browser import DEFAULT_HUB_URL, DEFAULT_STORAGE_STATE
+from ml_automation.scraper.coupon_scraper import scrape_ml_coupons
 from ml_automation.scraper.hub_scraper import scrape_affiliate_hub
 from ml_automation.scraper.link_generator import generate_affiliate_links
 from ml_automation.scraper.recon import run_recon
 from ml_automation.storage.exporter import export_items
 from ml_automation.storage.sent_store import (
     DEFAULT_PRICE_DB_PATH,
+    DEFAULT_SENT_COUPONS_PATH,
     DEFAULT_SENT_HISTORY_PATH,
     SentProductStore,
 )
@@ -421,6 +425,16 @@ def watch(
         help="Caminho do banco SQLite de histórico de preços.",
     ),
     headless: bool = typer.Option(True, "--headless/--headed"),
+    include_coupons: bool = typer.Option(
+        True,
+        "--include-coupons/--no-coupons",
+        help="Busca e envia cupons relevantes (Tecnologia e Roupas) imediatamente a cada ciclo.",
+    ),
+    coupon_cooldown_hours: float = typer.Option(
+        24.0,
+        "--coupon-cooldown-hours",
+        help="Horas sem repetir o mesmo cupom no Telegram.",
+    ),
 ) -> None:
     """Roda continuamente em segundo plano (a cada 15 min) extraindo, gerando links e postando no Telegram."""
     try:
@@ -447,8 +461,92 @@ def watch(
                 rotate_categories=rotate_categories,
                 search_query=search_query,
                 quiet_hours_mode=quiet_hours_mode,
+                include_coupons=include_coupons,
+                coupon_cooldown_hours=coupon_cooldown_hours,
                 logger=typer.echo,
             )
         )
     except KeyboardInterrupt:
         typer.echo("\n[WORKER] Encerrado pelo usuário.")
+
+
+@app.command("coupons")
+def coupons(
+    url: str = typer.Option(DEFAULT_COUPONS_URL, "--url", help="URL da página de cupons do ML."),
+    storage_state: Path = typer.Option(DEFAULT_STORAGE_STATE, "--state"),
+    output: Path = typer.Option(Path("output/cupons.json"), "--output", "-o"),
+    fmt: Literal["json", "csv"] = typer.Option("json", "--format", "-f"),
+    max_scrolls: int = typer.Option(4, "--max-scrolls"),
+    min_discount_pct: float = typer.Option(10.0, "--min-discount-pct"),
+    min_discount_brl: float = typer.Option(15.0, "--min-discount-brl"),
+    focus_only: bool = typer.Option(
+        True,
+        "--focus-only/--all-categories",
+        help="Prioriza/filtra cupons de Tecnologia, Roupas/Moda e Gerais do site.",
+    ),
+    limit: Optional[int] = typer.Option(None, "--limit", help="Limitar quantidade de cupons."),
+    send_telegram: bool = typer.Option(
+        False,
+        "--send-telegram",
+        help="Envia imediatamente os cupons inéditos para o Telegram.",
+    ),
+    api_url: str = typer.Option(
+        DEFAULT_TELEGRAM_API_URL,
+        "--api-url",
+        envvar="TELEGRAM_BOT_API_URL",
+    ),
+    api_key: Optional[str] = typer.Option(
+        None,
+        "--api-key",
+        envvar="TELEGRAM_BOT_API_KEY",
+    ),
+    chat_id: Optional[str] = typer.Option(
+        None,
+        "--chat-id",
+        envvar="TELEGRAM_CHAT_ID",
+    ),
+    sent_coupons: Path = typer.Option(DEFAULT_SENT_COUPONS_PATH, "--sent-coupons"),
+    headless: bool = typer.Option(True, "--headless/--headed"),
+) -> None:
+    """Coleta cupons do Mercado Livre (foco em Tecnologia e Roupas) e opcionalmente envia ao Telegram."""
+    if send_telegram:
+        stats = asyncio.run(
+            run_coupon_cycle(
+                coupon_url=url,
+                storage_state_path=storage_state,
+                coupons_output=output,
+                sent_coupons_path=sent_coupons,
+                api_url=api_url,
+                api_key=api_key,
+                chat_id=chat_id,
+                max_scrolls=max_scrolls,
+                batch_size=limit,
+                headless=headless,
+                focus_only=focus_only,
+                min_discount_pct=min_discount_pct,
+                min_discount_brl=min_discount_brl,
+                logger=typer.echo,
+            )
+        )
+        typer.echo(
+            f"Resumo Cupons -> Coletados: {stats['coupons_scraped']} | "
+            f"Inéditos: {stats['coupons_eligible']} | Enviados: {stats['coupons_sent']}"
+        )
+        return
+
+    items = asyncio.run(
+        scrape_ml_coupons(
+            url=url,
+            storage_state_path=storage_state,
+            max_scrolls=max_scrolls,
+            headless=headless,
+            only_relevant=True,
+            focus_only=focus_only,
+            min_discount_pct=min_discount_pct,
+            min_discount_brl=min_discount_brl,
+        )
+    )
+    if limit is not None:
+        items = items[:limit]
+    saved = export_items(items, output_path=output, fmt=fmt)
+    typer.echo(f"{len(items)} cupons salvos em: {saved}")

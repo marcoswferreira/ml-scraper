@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+from ml_automation.models.coupon import MercadoLivreCoupon
 from ml_automation.models.product import (
     AffiliateLinkResult,
     AffiliateProduct,
@@ -15,6 +16,7 @@ from ml_automation.models.product import (
 )
 
 DEFAULT_SENT_HISTORY_PATH = Path(".state/sent_history.json")
+DEFAULT_SENT_COUPONS_PATH = Path(".state/sent_coupons.json")
 DEFAULT_PRICE_DB_PATH = Path(".state/price_history.db")
 
 
@@ -212,6 +214,79 @@ class SentProductStore:
             "price": getattr(item, "price", None),
             "short_url": getattr(item, "short_url", None),
             "affiliate_url": getattr(item, "affiliate_url", None),
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "sent_at": timestamp,
+        }
+        self.save()
+
+
+class SentCouponStore:
+    """Tracks sent Mercado Livre coupons to prevent duplicate posts in Telegram."""
+
+    def __init__(self, path: Path = DEFAULT_SENT_COUPONS_PATH) -> None:
+        self.path = path
+        self._records: dict[str, dict[str, Any]] = {}
+        self.load()
+
+    def load(self) -> None:
+        if not self.path.exists():
+            self._records = {}
+            return
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            self._records = data if isinstance(data, dict) else {}
+        except Exception:
+            self._records = {}
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps(self._records, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def is_eligible(
+        self,
+        coupon: MercadoLivreCoupon | str,
+        cooldown_hours: float = 24.0,
+        now: Optional[datetime] = None,
+    ) -> bool:
+        """Return True if coupon has not been sent within cooldown_hours."""
+        key = coupon if isinstance(coupon, str) else coupon.coupon_id
+        entry = self._records.get(key)
+        if not entry:
+            return True
+
+        sent_at_str = entry.get("sent_at")
+        if not sent_at_str:
+            return False
+
+        try:
+            sent_at = datetime.fromisoformat(sent_at_str)
+            if sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return True
+
+        current_time = now or datetime.now(timezone.utc)
+        return (current_time - sent_at) >= timedelta(hours=cooldown_hours)
+
+    def mark_sent(
+        self,
+        coupon: MercadoLivreCoupon,
+        message_id: Optional[int] = None,
+        chat_id: Optional[str] = None,
+        sent_at: Optional[datetime] = None,
+    ) -> None:
+        """Record a coupon as sent and persist immediately."""
+        timestamp = (sent_at or datetime.now(timezone.utc)).isoformat()
+        self._records[coupon.coupon_id] = {
+            "coupon_id": coupon.coupon_id,
+            "title": coupon.title,
+            "category_match": coupon.category_match,
+            "short_url": coupon.short_url,
+            "affiliate_url": coupon.affiliate_url,
             "message_id": message_id,
             "chat_id": chat_id,
             "sent_at": timestamp,

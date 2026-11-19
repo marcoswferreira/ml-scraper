@@ -11,12 +11,14 @@ from ml_automation.integrations.telegram_client import (
     DEFAULT_TELEGRAM_API_URL,
     TelegramRelayClient,
 )
+from ml_automation.models.coupon import DEFAULT_COUPONS_URL
 from ml_automation.models.product import AffiliateLinkResult, AffiliateProduct
 from ml_automation.scraper.browser import (
     DEFAULT_HUB_URL,
     DEFAULT_STORAGE_STATE,
     SessionExpiredError,
 )
+from ml_automation.scraper.coupon_scraper import scrape_ml_coupons
 from ml_automation.scraper.hub_scraper import (
     PROFITABLE_CATEGORIES,
     scrape_affiliate_hub,
@@ -25,8 +27,10 @@ from ml_automation.scraper.link_generator import generate_affiliate_links
 from ml_automation.storage.exporter import export_items
 from ml_automation.storage.sent_store import (
     DEFAULT_PRICE_DB_PATH,
+    DEFAULT_SENT_COUPONS_PATH,
     DEFAULT_SENT_HISTORY_PATH,
     PriceHistoryStore,
+    SentCouponStore,
     SentProductStore,
 )
 
@@ -104,6 +108,109 @@ async def dispatch_links_to_telegram(
     return {"sent": sent_count, "skipped": skipped_count, "failed": failed_count}
 
 
+async def run_coupon_cycle(
+    coupon_url: str = DEFAULT_COUPONS_URL,
+    hub_url: str = DEFAULT_HUB_URL,
+    storage_state_path: Path = DEFAULT_STORAGE_STATE,
+    coupons_output: Path = Path("output/cupons.json"),
+    sent_coupons_path: Path = DEFAULT_SENT_COUPONS_PATH,
+    api_url: str = DEFAULT_TELEGRAM_API_URL,
+    api_key: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    max_scrolls: int = 4,
+    batch_size: Optional[int] = None,
+    send_delay_seconds: float = 5.0,
+    cooldown_hours: float = 24.0,
+    headless: bool = True,
+    focus_only: bool = True,
+    min_discount_pct: float = 10.0,
+    min_discount_brl: float = 15.0,
+    min_score: float = 35.0,
+    disable_notification: bool = False,
+    logger: Callable[[str], None] = print,
+) -> dict[str, int]:
+    """Scrape relevant Mercado Livre coupons (tech & fashion focus) and immediately dispatch new ones."""
+    coupons = await scrape_ml_coupons(
+        url=coupon_url,
+        storage_state_path=storage_state_path,
+        max_scrolls=max_scrolls,
+        headless=headless,
+        only_relevant=True,
+        focus_only=focus_only,
+        min_discount_pct=min_discount_pct,
+        min_discount_brl=min_discount_brl,
+        min_score=min_score,
+    )
+    export_items(coupons, output_path=coupons_output, fmt="json")
+
+    coupon_store = SentCouponStore(path=sent_coupons_path)
+    eligible = [c for c in coupons if coupon_store.is_eligible(c, cooldown_hours=cooldown_hours)]
+    selected = eligible[:batch_size] if batch_size is not None else eligible
+
+    logger(
+        f"[CUPONS] {len(coupons)} cupons relevantes (Tecnologia/Roupas/Geral) | "
+        f"{len(eligible)} inéditos | Enviando: {len(selected)}"
+    )
+
+    if not selected:
+        return {"coupons_scraped": len(coupons), "coupons_eligible": 0, "coupons_sent": 0}
+
+    # Try generating an affiliate short link for /cupons once per batch
+    aff_short: Optional[str] = None
+    aff_long: Optional[str] = None
+    try:
+        link_res = await generate_affiliate_links(
+            product_urls=[coupon_url],
+            hub_url=hub_url,
+            storage_state_path=storage_state_path,
+            headless=headless,
+        )
+        if link_res and link_res[0].status == "success":
+            aff_short = link_res[0].short_url
+            aff_long = link_res[0].affiliate_url
+    except Exception:
+        pass
+
+    for c in selected:
+        c.short_url = aff_short
+        c.affiliate_url = aff_long
+
+    client = TelegramRelayClient(base_url=api_url, api_key=api_key, chat_id=chat_id)
+    if not client.check_health():
+        logger(
+            f"[WARN] API telegram-bot ({client.base_url}/health) indisponível para envio de cupons."
+        )
+        return {
+            "coupons_scraped": len(coupons),
+            "coupons_eligible": len(eligible),
+            "coupons_sent": 0,
+        }
+
+    sent_count = 0
+    total = len(selected)
+    for idx, coupon in enumerate(selected):
+        try:
+            resp = client.send_coupon_offer(coupon, disable_notification=disable_notification)
+            msg_id = resp.get("message_id")
+            resp_chat_id = resp.get("chat_id")
+            coupon_store.mark_sent(coupon, message_id=msg_id, chat_id=resp_chat_id)
+            sent_count += 1
+            logger(
+                f"[TELEGRAM CUPOM] ({sent_count}/{total}) [{coupon.category_match or 'geral'}] "
+                f"{coupon.title} (msg_id={msg_id})"
+            )
+            if idx < total - 1 and send_delay_seconds > 0:
+                await asyncio.sleep(send_delay_seconds)
+        except Exception as exc:
+            logger(f"[ERRO TELEGRAM CUPOM] Falha ao enviar '{coupon.title[:45]}': {exc}")
+
+    return {
+        "coupons_scraped": len(coupons),
+        "coupons_eligible": len(eligible),
+        "coupons_sent": sent_count,
+    }
+
+
 async def run_worker_cycle(
     url: str = DEFAULT_HUB_URL,
     storage_state_path: Path = DEFAULT_STORAGE_STATE,
@@ -123,6 +230,11 @@ async def run_worker_cycle(
     category: Optional[str] = None,
     search_query: Optional[str] = None,
     quiet_hours_mode: Literal["silent", "pause", "off"] = "silent",
+    include_coupons: bool = True,
+    coupons_output: Path = Path("output/cupons.json"),
+    sent_coupons_path: Path = DEFAULT_SENT_COUPONS_PATH,
+    coupon_cooldown_hours: float = 24.0,
+    coupon_batch_size: Optional[int] = None,
     now: Optional[datetime] = None,
     logger: Callable[[str], None] = print,
 ) -> dict[str, Any]:
@@ -186,6 +298,27 @@ async def run_worker_cycle(
         f"[CURADORIA] {len(eligible)} produtos inéditos/elegíveis | Selecionados para este ciclo: {len(selected)}"
     )
 
+    silent_notify = in_quiet and quiet_hours_mode == "silent"
+    coupon_stats: dict[str, int] = {"coupons_scraped": 0, "coupons_eligible": 0, "coupons_sent": 0}
+    if include_coupons:
+        try:
+            coupon_stats = await run_coupon_cycle(
+                hub_url=url,
+                storage_state_path=storage_state_path,
+                coupons_output=coupons_output,
+                sent_coupons_path=sent_coupons_path,
+                api_url=api_url,
+                api_key=api_key,
+                chat_id=chat_id,
+                batch_size=coupon_batch_size,
+                cooldown_hours=coupon_cooldown_hours,
+                headless=headless,
+                disable_notification=silent_notify,
+                logger=logger,
+            )
+        except Exception as exc:
+            logger(f"[ERRO CUPONS] Falha no ciclo de cupons: {exc}")
+
     if not selected:
         export_items(products, output_path=products_output, fmt="json")
         return {
@@ -194,6 +327,7 @@ async def run_worker_cycle(
             "links_generated": 0,
             "sent": 0,
             "failed": 0,
+            **coupon_stats,
         }
 
     link_results = await generate_affiliate_links(
@@ -209,7 +343,6 @@ async def run_worker_cycle(
     export_items(link_results, output_path=links_output, fmt="json")
     export_items(link_results, output_path=links_output.with_suffix(".csv"), fmt="csv")
 
-    silent_notify = in_quiet and quiet_hours_mode == "silent"
     dispatch_stats = await dispatch_links_to_telegram(
         items=successful_links,
         client=client,
@@ -228,6 +361,7 @@ async def run_worker_cycle(
         "lowest_price_count": lowest_detected,
         "links_generated": len(successful_links),
         **dispatch_stats,
+        **coupon_stats,
     }
 
 
@@ -253,6 +387,11 @@ async def run_continuous_worker(
     rotate_categories: bool = True,
     search_query: Optional[str] = None,
     quiet_hours_mode: Literal["silent", "pause", "off"] = "silent",
+    include_coupons: bool = True,
+    coupons_output: Path = Path("output/cupons.json"),
+    sent_coupons_path: Path = DEFAULT_SENT_COUPONS_PATH,
+    coupon_cooldown_hours: float = 24.0,
+    coupon_batch_size: Optional[int] = None,
     logger: Callable[[str], None] = print,
 ) -> list[dict[str, Any]]:
     """Run the affiliate curation and Telegram dispatch loop every `interval_minutes` minutes."""
@@ -296,6 +435,11 @@ async def run_continuous_worker(
                 category=active_category,
                 search_query=search_query,
                 quiet_hours_mode=quiet_hours_mode,
+                include_coupons=include_coupons,
+                coupons_output=coupons_output,
+                sent_coupons_path=sent_coupons_path,
+                coupon_cooldown_hours=coupon_cooldown_hours,
+                coupon_batch_size=coupon_batch_size,
                 logger=logger,
             )
             history.append(stats)

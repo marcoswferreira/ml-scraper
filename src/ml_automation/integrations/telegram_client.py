@@ -11,6 +11,7 @@ import urllib.request
 import uuid
 from typing import Any, Optional
 
+from ml_automation.models.coupon import MercadoLivreCoupon
 from ml_automation.models.product import AffiliateLinkResult, AffiliateProduct
 
 DEFAULT_TELEGRAM_API_URL = "http://localhost:8080"
@@ -66,6 +67,45 @@ def format_telegram_html(item: AffiliateLinkResult | AffiliateProduct) -> str:
     safe_link = html.escape(link, quote=True)
     lines.append("")
     lines.append(f'🛒 <a href="{safe_link}">Comprar no Mercado Livre</a>')
+    lines.append(f"🔗 {html.escape(link)}")
+
+    return "\n".join(lines)
+
+
+def format_coupon_telegram_html(coupon: MercadoLivreCoupon) -> str:
+    """Format a Mercado Livre coupon alert using Telegram-compatible HTML."""
+    cat_labels = {
+        "tecnologia": "TECNOLOGIA",
+        "roupas": "ROUPAS & MODA",
+        "geral": "GERAL",
+    }
+    cat_tag = cat_labels.get((coupon.category_match or "").lower(), "")
+    header = "🎟️ <b>CUPOM MERCADO LIVRE</b>" + (f" · <code>{cat_tag}</code>" if cat_tag else "")
+
+    lines: list[str] = [
+        header,
+        f"🔥 <b>{html.escape(coupon.title)}</b>",
+        "",
+    ]
+
+    if coupon.scope_text:
+        lines.append(f"📌 {html.escape(coupon.scope_text)}")
+
+    limits: list[str] = []
+    if coupon.min_purchase_brl is not None:
+        limits.append(f"Compra mínima: {_fmt_brl(coupon.min_purchase_brl)}")
+    if coupon.max_discount_brl is not None:
+        limits.append(f"Limite: {_fmt_brl(coupon.max_discount_brl)}")
+    if limits:
+        lines.append("💳 " + " | ".join(limits))
+
+    if coupon.expires_text:
+        lines.append(f"⏳ {html.escape(coupon.expires_text)}")
+
+    link = coupon.short_url or coupon.affiliate_url or coupon.coupon_url
+    safe_link = html.escape(link, quote=True)
+    lines.append("")
+    lines.append(f'🛒 <a href="{safe_link}">Resgatar cupom no Mercado Livre</a>')
     lines.append(f"🔗 {html.escape(link)}")
 
     return "\n".join(lines)
@@ -269,6 +309,20 @@ class TelegramRelayClient:
 
         return self.send_text_message(
             text=caption,
+            parse_mode="HTML",
+            disable_web_page_preview=False,
+            disable_notification=disable_notification,
+        )
+
+    def send_coupon_offer(
+        self,
+        coupon: MercadoLivreCoupon,
+        disable_notification: bool = False,
+    ) -> dict[str, Any]:
+        """Send a formatted Mercado Livre coupon alert to the Telegram group."""
+        text = format_coupon_telegram_html(coupon)
+        return self.send_text_message(
+            text=text,
             parse_mode="HTML",
             disable_web_page_preview=False,
             disable_notification=disable_notification,

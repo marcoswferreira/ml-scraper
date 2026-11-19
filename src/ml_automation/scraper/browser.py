@@ -96,7 +96,11 @@ async def open_authenticated_context(
                 try:
                     current_url = (page.url or "").lower()
                     if current_url.startswith("http") and "login" not in current_url:
-                        await context.storage_state(path=str(storage_state_path))
+                        tmp_path = storage_state_path.with_name(
+                            f".{storage_state_path.name}.{os.getpid()}.tmp"
+                        )
+                        await context.storage_state(path=str(tmp_path))
+                        os.replace(tmp_path, storage_state_path)
                 except Exception:
                     pass
             await context.close()
